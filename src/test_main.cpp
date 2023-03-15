@@ -39,7 +39,9 @@ struct TreeNode {
     int val;
     TreeNode *sons[4];
 
-    TreeNode(int x) : val(x), sons{} {}
+    explicit TreeNode(int x) : val(x), sons{} {}
+
+    TreeNode(const TreeNode &o) { val = o.val; }
 };
 
 

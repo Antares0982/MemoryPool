@@ -38,6 +38,21 @@ namespace Antares::MemoryPool {
         ControlledResouce *GetResoucePointer();
 
         ControlledResouce *GetTempResoucePointer();
+
+        template<typename T>
+        constexpr void ConstructArray(T *where, size_t size) {
+            for (size_t i = 0; i < size; ++i) {
+                new(where + i) T();
+            }
+        }
+
+        template<typename T>
+        constexpr void ConstructArray(T *where, size_t size, const T &prototype) {
+            for (size_t i = 0; i < size; ++i) {
+                new(where + i) T(prototype);
+            }
+        }
+
     }
 
     /// @brief Allocator meets the C++20 MemoryResource requirements.
@@ -75,22 +90,40 @@ namespace Antares::MemoryPool {
     /// @brief Create a new array. Thread safe.
     template<typename T>
     [[nodiscard]] T *NewArray(size_t size) {
-        auto ptr = Malloc(sizeof(T) * size, alignof(T));
-        return new(ptr) T[size];
+        auto ptr = (T *) Malloc(sizeof(T) * size, alignof(T));
+        details::ConstructArray(ptr, size);
+        return ptr;
     }
 
-    /// @brief Create a temporary object, which cannot be retrieved by GC function. Thread safe.
+    /// @brief Create a new array using prototype. Thread safe.
+    template<typename T>
+    [[nodiscard]] T *NewArray(size_t size, const T &prototype) {
+        auto ptr = (T *) Malloc(sizeof(T) * size, alignof(T));
+        details::ConstructArray(ptr, size, prototype);
+        return ptr;
+    }
+
+    /// @brief Create a temporary object, which can be deallocated right before GC. Thread safe.
     template<typename T, typename ... Args>
     [[nodiscard]] T *NewTemp(Args &&... args) {
         auto ptr = MallocTemp(sizeof(T), alignof(T));
         return new(ptr) T(std::forward<Args>(args)...);
     }
 
-    /// @brief Create a temporary array, which cannot be retrieved by GC function. Thread safe.
+    /// @brief Create a temporary array, which will be deleted right before GC. Thread safe.
     template<typename T>
     [[nodiscard]] T *NewTempArray(size_t size) {
         auto ptr = MallocTemp(sizeof(T) * size, alignof(T));
-        return new(ptr) T[size];
+        details::ConstructArray(ptr, size);
+        return ptr;
+    }
+
+    /// @brief Create a temporary array with given prototype, which will be deleted right before GC. Thread safe.
+    template<typename T>
+    [[nodiscard]] T *NewTempArray(size_t size, const T &prototype) {
+        auto ptr = MallocTemp(sizeof(T) * size, alignof(T));
+        details::ConstructArray(ptr, size, prototype);
+        return ptr;
     }
 
     /// @brief Delete an object
@@ -98,6 +131,21 @@ namespace Antares::MemoryPool {
     void Delete(T *ptr) {
         ptr->~T();
     }
+
+    /// @brief Delete an array with given length
+    template<typename T>
+    void DeleteArray(T *ptr, size_t size) {
+        for (size_t i = 0; i < size; ++i) {
+            (ptr + i)->~T();
+        }
+    }
+
+    /// @brief Deleter for std::unique_ptr
+    /// @note there is no deleter for array
+    template<typename T>
+    struct Deleter {
+        constexpr void operator()(T *ptr) { DeleteObject(ptr); }
+    };
 
     /// @brief Register a GC function
     /// @param gc The GC function
