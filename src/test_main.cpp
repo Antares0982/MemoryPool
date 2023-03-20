@@ -28,6 +28,7 @@
 #include "MemoryPool.h"
 #include <deque>
 #include <iostream>
+#include <cassert>
 
 #ifdef __linux__
 
@@ -41,9 +42,20 @@ struct TreeNode {
 
     explicit TreeNode(int x) : val(x), sons{} {}
 
-    TreeNode(const TreeNode &o) { val = o.val; }
+    TreeNode(const TreeNode &o) = delete;
 };
 
+class SpinLock {
+    std::atomic_flag locked = ATOMIC_FLAG_INIT;
+public:
+    void lock() {
+        while (locked.test_and_set(std::memory_order_acquire)) {}
+    }
+
+    void unlock() {
+        locked.clear(std::memory_order_release);
+    }
+};
 
 int main() {
     using namespace Antares::MemoryPool;
@@ -59,15 +71,19 @@ int main() {
     /// first task: create a tree with 4 sons for each node, using memory pool to allocate memory
     /// the total number of nodes except the root is `total`
 
-    TreeNode *root = New<TreeNode>(0);
+    auto root = New<TreeNode>(0);
 
     for (size_t i = 0; i < 4; i++) {
         root->sons[i] = New<TreeNode>(i + 1);
         dequeues[i].push_back(root->sons[i]);
     }
+    SpinLock lk0;
+    lk0.lock();
     for (size_t i = 0; i < 4; i++) {
-        threads[i] = std::thread([i, &mutexes, &dequeues, &counter] {
-            // get one node from queue, and then create 4 nodes and send to queue
+        threads[i] = std::thread([i, &lk0, &mutexes, &dequeues, &counter] {
+            lk0.lock();
+            lk0.unlock();
+            // get one node from queue, then create 4 nodes and send them to queue
             auto &mtx = mutexes[i];
             auto &dq = dequeues[i];
 
@@ -94,12 +110,10 @@ int main() {
                     std::lock_guard lk(mutex);
                     deque.push_back(ptr);
                 }
-                for (int j = 0; j < 4; j++) {
-
-                }
             }
         });
     }
+    lk0.unlock();
 
     for (auto &thread: threads) {
         thread.join();
@@ -126,8 +140,12 @@ int main() {
         dequeues[0].push_back(newroot);
         std::array<std::thread, 4> threads;
         counter = total;
+        SpinLock lk1;
+        lk1.lock();
         for (size_t i = 0; i < 4; i++) {
-            threads[i] = std::thread([i, &mutexes, &dequeues, &counter] {
+            threads[i] = std::thread([i, &lk1, &mutexes, &dequeues, &counter] {
+                lk1.lock();
+                lk1.unlock();
                 auto &mutex = mutexes[i];
                 auto &deque = dequeues[i];
                 while (counter > 0) {
@@ -142,16 +160,16 @@ int main() {
                     }
                     for (size_t j = 0; j < 4; j++) {
                         if (node->sons[j] != nullptr) {
-                            auto &mutex = mutexes[j];
-                            auto &deque = dequeues[j];
+                            auto &mutexj = mutexes[j];
+                            auto &dequej = dequeues[j];
                             auto nson = New<TreeNode>(node->sons[j]->val);
                             for (size_t k = 0; k < 4; k++) {
                                 nson->sons[k] = node->sons[j]->sons[k];
                             }
                             Delete(node->sons[j]);
                             {
-                                std::lock_guard lk(mutex);
-                                deque.push_back(nson);
+                                std::lock_guard lk(mutexj);
+                                dequej.push_back(nson);
                             }
                             counter--;
                         }
@@ -159,6 +177,7 @@ int main() {
                 }
             });
         }
+        lk1.unlock();
         for (auto &thread: threads) {
             thread.join();
         }
@@ -189,8 +208,74 @@ int main() {
     std::cout << "Current value in old root (invalid read): " << oldRoot->val << ", since GCed it may not be 0"
               << std::endl << std::endl;
 
-    Clean();
+    constexpr size_t bufferSize = 1024;
+    static size_t buffer[bufferSize];
+    static std::atomic<size_t> buffer_counter = 0;
+    struct Test {
+        size_t cc;
 
+        Test() {
+            cc = buffer_counter++;
+            buffer[cc] = cc;
+        }
+
+        ~Test() {
+            buffer[cc] = bufferSize;
+            buffer_counter--;
+        }
+    };
+
+    {
+        std::cout << "Testing new array..." << std::endl;
+        auto testPtrArray = NewArray<Test>(bufferSize);
+        std::cout << "Expecting buffer_counter = " << bufferSize << ", got " << buffer_counter.load() << std::endl;
+        assert(buffer_counter == bufferSize);
+        DeleteArray(testPtrArray, bufferSize);
+        assert(buffer_counter == 0);
+        std::cout << "Expecting buffer_counter = 0, got " << buffer_counter.load() << std::endl;
+    }
+
+    {
+        std::cout << "Testing Allocator..." << std::endl;
+        std::vector<Test, Allocator<Test>> testVec(GetAllocator<Test>());
+        testVec.reserve(bufferSize);
+        for (size_t i = 0; i < bufferSize; i++) {
+            testVec.emplace_back();
+        }
+        std::cout << "Expecting buffer_counter = " << bufferSize << ", got " << buffer_counter.load() << std::endl;
+        assert(buffer_counter == bufferSize);
+        testVec.resize(bufferSize / 2);
+        std::cout << "Expecting buffer_counter = " << bufferSize / 2 << ", got " << buffer_counter.load() << std::endl;
+        assert(buffer_counter == bufferSize / 2);
+        testVec.resize(bufferSize);
+        std::cout << "Expecting buffer_counter = " << bufferSize << ", got " << buffer_counter.load() << std::endl;
+        assert(buffer_counter == bufferSize);
+        testVec.clear();
+        std::cout << "Expecting buffer_counter = 0, got " << buffer_counter.load() << std::endl;
+    }
+
+    {
+        std::cout << "Testing ThreadLocalAllocator..." << std::endl;
+        std::vector<Test, ThreadLocalAllocator<Test>> testVec(
+                GetThreadLocalAllocator<Test, Antares::MemoryPool::Temporary>()
+        );
+        testVec.reserve(bufferSize);
+        for (size_t i = 0; i < bufferSize; i++) {
+            testVec.emplace_back();
+        }
+        std::cout << "Expecting buffer_counter = " << bufferSize << ", got " << buffer_counter.load() << std::endl;
+        assert(buffer_counter == bufferSize);
+        testVec.resize(bufferSize / 2);
+        std::cout << "Expecting buffer_counter = " << bufferSize / 2 << ", got " << buffer_counter.load() << std::endl;
+        assert(buffer_counter == bufferSize / 2);
+        testVec.resize(bufferSize);
+        std::cout << "Expecting buffer_counter = " << bufferSize << ", got " << buffer_counter.load() << std::endl;
+        assert(buffer_counter == bufferSize);
+        testVec.clear();
+        std::cout << "Expecting buffer_counter = 0, got " << buffer_counter.load() << std::endl;
+    }
+
+    Clean();
     std::cout << "All memory cleaned" << std::endl;
 
 #ifdef __linux__

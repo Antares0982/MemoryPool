@@ -35,29 +35,55 @@ namespace Antares::MemoryPool {
         using Resource = std::pmr::monotonic_buffer_resource;
         using ControlledResouce = std::unique_ptr<Resource>;
 
-        ControlledResouce *GetResoucePointer();
+        Resource *GetResourcePointer();
 
-        ControlledResouce *GetTempResoucePointer();
+        Resource *GetTempResourcePointer();
 
-        template<typename T>
+        template<typename T, typename = std::enable_if_t<!std::is_void_v<T>>>
         constexpr void ConstructArray(T *where, size_t size) {
             for (size_t i = 0; i < size; ++i) {
                 new(where + i) T();
             }
         }
 
-        template<typename T>
+        template<typename T, typename = std::enable_if_t<!std::is_void_v<T>>>
         constexpr void ConstructArray(T *where, size_t size, const T &prototype) {
             for (size_t i = 0; i < size; ++i) {
                 new(where + i) T(prototype);
             }
         }
 
+        template<typename T, typename Trait>
+        struct Allocator : public std::allocator<T> {
+            Allocator(const Allocator &) = default;
+
+            Allocator() = default;
+
+            Allocator(Allocator &&) noexcept = default;
+
+            ~Allocator() = default;
+
+            [[nodiscard]] T *allocate(size_t n
+#if __cplusplus <= 201703L
+                    const void* hint = nullptr
+#endif
+            ) {
+                auto result = (T *) Trait::Malloc(n * sizeof(T));
+                if (!result)std::__throw_bad_array_new_length();
+                return result;
+            }
+
+#if __cplusplus >= 202106L
+            std::allocation_result<T*, std::size_t> allocate_at_least( std::size_t n ){
+            auto result = allocate(n);
+            return {result, n};
+        }
+#endif
+
+            constexpr void deallocate(T *, std::size_t) {}
+        };
     }
 
-    /// @brief Allocator meets the C++20 MemoryResource requirements.
-    template<typename T= std::byte>
-    using Allocator = std::pmr::polymorphic_allocator<T>;
 
     /// @brief malloc a memory block. Thread safe.
     [[nodiscard]] void *Malloc(size_t size, size_t align = sizeof(void *));
@@ -68,16 +94,61 @@ namespace Antares::MemoryPool {
     /// @brief Only for memory traits compatibility. Literally do nothing.
     constexpr void Free(void *) {}
 
+    namespace details {
+        struct DefaultTrait {
+            static void *Malloc(size_t size, size_t align = sizeof(void *)) {
+                return ::Antares::MemoryPool::Malloc(size, align);
+            }
+
+            static void Free(void *) {
+            }
+        };
+
+        struct TempTrait {
+            static void *Malloc(size_t size, size_t align = sizeof(void *)) {
+                return MallocTemp(size, align);
+            }
+
+            static void Free(void *) {}
+        };
+    }
+
+    enum AllocatePolicy {
+        Default,
+        Temporary,
+    };
+
+    /// @brief Allocator meets the standard `Allocator` requirements. Thread safe.
+    template<typename T>
+    using Allocator = details::Allocator<T, details::DefaultTrait>;
+
+    /// @brief Temporary allocator meets the standard `Allocator` requirements. Thread safe.
+    template<typename T>
+    using TempAllocator = details::Allocator<T, details::TempTrait>;
+
+    /// @brief Allocator allocates memory thread locally. Usually faster, but not thread safe.
+    template<typename T>
+    using ThreadLocalAllocator = std::pmr::polymorphic_allocator<T>;
+
     /// @brief Get an allocator object for containers.
-    template<typename T= std::byte>
-    Allocator<T> GetAllocator() {
-        return Allocator<T>(details::GetResoucePointer());
+    template<typename T>
+    auto GetAllocator() {
+        return Allocator<T>();
     }
 
     /// @brief Get a temporary allocator object for containers.
-    template<typename T = std::byte>
-    Allocator<T> GetTempAllocator() {
-        return Allocator<T>(details::GetTempResoucePointer());
+    template<typename T>
+    auto GetTempAllocator() {
+        return TempAllocator<T>();
+    }
+
+    /// @brief Get a thread local allocator object for containers.
+    template<typename T, AllocatePolicy P = Default>
+    auto GetThreadLocalAllocator() {
+        if constexpr (P == Default)
+            return ThreadLocalAllocator<T>(details::GetResourcePointer());
+        else
+            return ThreadLocalAllocator<T>(details::GetTempResourcePointer());
     }
 
     /// @brief Create a new object. Thread safe.
@@ -113,7 +184,7 @@ namespace Antares::MemoryPool {
     /// @brief Create a temporary array, which will be deleted right before GC. Thread safe.
     template<typename T>
     [[nodiscard]] T *NewTempArray(size_t size) {
-        auto ptr = MallocTemp(sizeof(T) * size, alignof(T));
+        auto ptr = (T *) MallocTemp(sizeof(T) * size, alignof(T));
         details::ConstructArray(ptr, size);
         return ptr;
     }
@@ -121,7 +192,7 @@ namespace Antares::MemoryPool {
     /// @brief Create a temporary array with given prototype, which will be deleted right before GC. Thread safe.
     template<typename T>
     [[nodiscard]] T *NewTempArray(size_t size, const T &prototype) {
-        auto ptr = MallocTemp(sizeof(T) * size, alignof(T));
+        auto ptr = (T *) MallocTemp(sizeof(T) * size, alignof(T));
         details::ConstructArray(ptr, size, prototype);
         return ptr;
     }

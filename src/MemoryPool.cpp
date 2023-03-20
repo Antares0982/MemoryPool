@@ -47,8 +47,8 @@ namespace Antares::MemoryPool {
         };
 
         struct ResourceMap {
-            SpinLock mutex;
             std::unordered_map<std::thread::id, std::unique_ptr<ControlledResouce>> holder;
+            SpinLock mutex;
         };
 
         static ResourceMap &GetResouce() {
@@ -82,25 +82,25 @@ namespace Antares::MemoryPool {
             return rtPtrPtr;
         }
 
-        ControlledResouce *GetResoucePointer() {
-            thread_local auto controlledResourcePtrPtr = createResourceAndBindToResourceHolder(GetResouce());
-            return controlledResourcePtrPtr;
+        Resource *GetResourcePointer() {
+            thread_local const auto controlledResourcePtrPtr = createResourceAndBindToResourceHolder(GetResouce());
+            return controlledResourcePtrPtr->get();
         }
 
-        ControlledResouce *GetTempResoucePointer() {
-            thread_local auto controlledResourcePtrPtr = createResourceAndBindToResourceHolder(GetBackupResouce());
-            return controlledResourcePtrPtr;
+        Resource *GetTempResourcePointer() {
+            thread_local const auto controlledResourcePtrPtr = createResourceAndBindToResourceHolder(GetBackupResouce());
+            return controlledResourcePtrPtr->get();
         }
     }
 
     using namespace details;
 
     void *Malloc(size_t size, size_t align) {
-        return GetResoucePointer()->get()->allocate(size, align);
+        return GetResourcePointer()->allocate(size, align);
     }
 
     void *MallocTemp(size_t size, size_t align) {
-        return GetTempResoucePointer()->get()->allocate(size, align);
+        return GetTempResourcePointer()->allocate(size, align);
     }
 
     std::function<void()> &GetGCAlgorithm() {
