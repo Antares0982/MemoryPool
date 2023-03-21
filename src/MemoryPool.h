@@ -130,18 +130,6 @@ namespace Antares::MemoryPool {
     template<typename T>
     using ThreadLocalAllocator = std::pmr::polymorphic_allocator<T>;
 
-    /// @brief Get an allocator object for containers.
-    template<typename T>
-    auto GetAllocator() {
-        return Allocator<T>();
-    }
-
-    /// @brief Get a temporary allocator object for containers.
-    template<typename T>
-    auto GetTempAllocator() {
-        return TempAllocator<T>();
-    }
-
     /// @brief Get a thread local allocator object for containers.
     template<typename T, AllocatePolicy P = Default>
     auto GetThreadLocalAllocator() {
@@ -195,6 +183,12 @@ namespace Antares::MemoryPool {
         auto ptr = (T *) MallocTemp(sizeof(T) * size, alignof(T));
         details::ConstructArray(ptr, size, prototype);
         return ptr;
+    }
+
+    /// @brief Construct an object at given address
+    template<typename T, typename ... Args>
+    void AllocateAt(T *ptr, Args &&... args) {
+        new(ptr) T(std::forward<Args>(args)...);
     }
 
     /// @brief Delete an object
