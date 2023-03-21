@@ -237,7 +237,7 @@ int main() {
 
     {
         std::cout << "Testing Allocator..." << std::endl;
-        std::vector<Test, Allocator<Test>> testVec(GetAllocator<Test>());
+        std::vector<Test, Allocator<Test>> testVec;
         testVec.reserve(bufferSize);
         for (size_t i = 0; i < bufferSize; i++) {
             testVec.emplace_back();

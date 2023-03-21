@@ -118,6 +118,16 @@ namespace Antares::MemoryPool {
         Temporary,
     };
 
+    template<AllocatePolicy P = Default>
+    void *MallocWithPolicy(size_t size, size_t align = sizeof(void *)) {
+        if constexpr (P == Default)
+            return Malloc(size, align);
+        else if constexpr (P == Temporary)
+            return MallocTemp(size, align);
+        else
+            static_assert(P == Default || P == Temporary, "Unknown policy");
+    }
+
     /// @brief Allocator meets the standard `Allocator` requirements. Thread safe.
     template<typename T>
     using Allocator = details::Allocator<T, details::DefaultTrait>;
