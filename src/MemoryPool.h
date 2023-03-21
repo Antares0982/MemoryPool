@@ -55,11 +55,13 @@ namespace Antares::MemoryPool {
 
         template<typename T, typename Trait>
         struct Allocator : public std::allocator<T> {
-            Allocator(const Allocator &) = default;
-
             Allocator() = default;
 
-            Allocator(Allocator &&) noexcept = default;
+            template<typename T2>
+            Allocator(const Allocator<T2, Trait> &) {} // NOLINT(google-explicit-constructor)
+
+            template<typename T2>
+            Allocator(Allocator<T2, Trait> &&) noexcept {} // NOLINT(google-explicit-constructor) }
 
             ~Allocator() = default;
 
