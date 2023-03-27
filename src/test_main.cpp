@@ -23,6 +23,8 @@
 // OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 // SOFTWARE.
 
+#ifdef TEST_MEMORYPOOL_MAIN
+
 #include <array>
 #include <thread>
 #include "MemoryPool.h"
@@ -286,3 +288,5 @@ int main() {
 
     return 0;
 }
+
+#endif

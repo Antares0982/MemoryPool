@@ -16,6 +16,8 @@ if (NOT WIN32)
     target_link_libraries(common INTERFACE pthread)
 endif ()
 
+target_compile_definitions(common INTERFACE TEST_MEMORYPOOL_MAIN)
+
 ############################################################################
 set(BUILD_TARGET memorypool_test)
 add_executable(${BUILD_TARGET} ${testpath})
