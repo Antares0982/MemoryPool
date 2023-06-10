@@ -67,11 +67,11 @@ namespace Antares::MemoryPool {
 
             [[nodiscard]] T *allocate(size_t n
 #if __cplusplus <= 201703L
-                    const void* hint = nullptr
+                    ,const void* hint = nullptr
 #endif
             ) {
                 auto result = (T *) Trait::Malloc(n * sizeof(T));
-                if (!result)std::__throw_bad_array_new_length();
+                if (!result) throw std::bad_array_new_length();
                 return result;
             }
 
