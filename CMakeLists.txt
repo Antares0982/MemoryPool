@@ -16,7 +16,7 @@ if (NOT WIN32)
     target_link_libraries(common INTERFACE pthread)
 endif ()
 
-target_compile_definitions(common INTERFACE TEST_MEMORYPOOL_MAIN)
+target_compile_definitions(common INTERFACE TEST_MEMORYPOOL_MAIN MAX_MEMORYPOOL_COUNT=64)
 
 ############################################################################
 set(BUILD_TARGET memorypool_test)

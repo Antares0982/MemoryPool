@@ -25,18 +25,20 @@
 
 #ifdef TEST_MEMORYPOOL_MAIN
 
-#include <array>
-#include <thread>
-#include "MemoryPool.h"
-#include <deque>
-#include <iostream>
-#include <cassert>
 
-#ifdef __linux__
+    #include <array>
+    #include <thread>
+    #include "MemoryPool.h"
+    #include <deque>
+    #include <iostream>
+    #include <cassert>
 
-#include <malloc.h>
 
-#endif
+    #ifdef __linux__
+
+        #include <malloc.h>
+
+    #endif
 
 struct TreeNode {
     int val;
@@ -60,7 +62,8 @@ public:
 };
 
 int main() {
-    using namespace Antares::MemoryPool;
+    using MemoryPool = Antares::MemoryPool;
+    MemoryPool pool;
     std::array<std::thread, 4> threads;
     std::array<std::mutex, 4> mutexes;
 
@@ -73,16 +76,16 @@ int main() {
     /// first task: create a tree with 4 sons for each node, using memory pool to allocate memory
     /// the total number of nodes except the root is `total`
 
-    auto root = New<TreeNode>(0);
+    auto root = pool.New<TreeNode>(0);
 
     for (size_t i = 0; i < 4; i++) {
-        root->sons[i] = New<TreeNode>(i + 1);
+        root->sons[i] = pool.New<TreeNode>(i + 1);
         dequeues[i].push_back(root->sons[i]);
     }
     SpinLock lk0;
     lk0.lock();
     for (size_t i = 0; i < 4; i++) {
-        threads[i] = std::thread([i, &lk0, &mutexes, &dequeues, &counter] {
+        threads[i] = std::thread([i, &pool, &lk0, &mutexes, &dequeues, &counter] {
             lk0.lock();
             lk0.unlock();
             // get one node from queue, then create 4 nodes and send them to queue
@@ -105,7 +108,7 @@ int main() {
                     if (counting > total) {
                         return;
                     }
-                    auto ptr = New<TreeNode>(counting);
+                    auto ptr = pool.New<TreeNode>(counting);
                     node->sons[j] = ptr;
                     auto &mutex = mutexes[j];
                     auto &deque = dequeues[j];
@@ -128,15 +131,16 @@ int main() {
     std::cout << "done" << std::endl;
     std::cout << "current root node address: " << root << std::endl << std::endl;
 
+
     /// second task: gc the old tree, and create a new tree with the same structure
-    std::function<void()> gc = [&mutexes, &dequeues, &root, &counter]() {
+    std::function < void() > gc = [&pool, &mutexes, &dequeues, &root, &counter]() {
         // copy root
-        auto newroot = New<TreeNode>(root->val);
+        auto newroot = pool.New<TreeNode>(root->val);
         for (size_t i = 0; i < 4; i++) {
             newroot->sons[i] = root->sons[i];
         }
         // delete old root
-        Delete(root);
+        pool.Delete(root);
         root = newroot;
         // start recursive gc
         dequeues[0].push_back(newroot);
@@ -145,7 +149,7 @@ int main() {
         SpinLock lk1;
         lk1.lock();
         for (size_t i = 0; i < 4; i++) {
-            threads[i] = std::thread([i, &lk1, &mutexes, &dequeues, &counter] {
+            threads[i] = std::thread([i, &pool, &lk1, &mutexes, &dequeues, &counter] {
                 lk1.lock();
                 lk1.unlock();
                 auto &mutex = mutexes[i];
@@ -164,11 +168,11 @@ int main() {
                         if (node->sons[j] != nullptr) {
                             auto &mutexj = mutexes[j];
                             auto &dequej = dequeues[j];
-                            auto nson = New<TreeNode>(node->sons[j]->val);
+                            auto nson = pool.New<TreeNode>(node->sons[j]->val);
                             for (size_t k = 0; k < 4; k++) {
                                 nson->sons[k] = node->sons[j]->sons[k];
                             }
-                            Delete(node->sons[j]);
+                            pool.Delete(node->sons[j]);
                             {
                                 std::lock_guard lk(mutexj);
                                 dequej.push_back(nson);
@@ -185,22 +189,22 @@ int main() {
         }
     };
 
-#ifdef __linux__
+    #ifdef __linux__
     std::this_thread::sleep_for(std::chrono::seconds(1));
     malloc_stats();
     std::this_thread::sleep_for(std::chrono::seconds(1));
-#endif
+    #endif
 
     auto oldRoot = root;
     std::cout << "Before GC, current value in old root: " << oldRoot->val << std::endl << std::endl;
-    RegisterGC(gc);
-    GC();
+    pool.RegisterGC(gc);
+    pool.GC();
 
-#ifdef __linux__
+    #ifdef __linux__
     std::this_thread::sleep_for(std::chrono::seconds(1));
     malloc_stats();
     std::this_thread::sleep_for(std::chrono::seconds(1));
-#endif
+    #endif
 
     std::cout << std::endl << "GC done" << std::endl;
     std::cout << "current root node address: " << root << std::endl;
@@ -229,17 +233,19 @@ int main() {
 
     {
         std::cout << "Testing new array..." << std::endl;
-        auto testPtrArray = NewArray<Test>(bufferSize);
+        auto testPtrArray = pool.NewArray<Test>(bufferSize);
         std::cout << "Expecting buffer_counter = " << bufferSize << ", got " << buffer_counter.load() << std::endl;
         assert(buffer_counter == bufferSize);
-        DeleteArray(testPtrArray, bufferSize);
+        pool.DeleteArray(testPtrArray, bufferSize);
         assert(buffer_counter == 0);
         std::cout << "Expecting buffer_counter = 0, got " << buffer_counter.load() << std::endl;
     }
 
     {
+        MemoryPool::Allocator <Test> allocatorTemplate(&pool);
         std::cout << "Testing Allocator..." << std::endl;
-        std::vector<Test, Allocator<Test>> testVec;
+        std::vector<Test, MemoryPool::Allocator < Test>>
+        testVec(allocatorTemplate);
         testVec.reserve(bufferSize);
         for (size_t i = 0; i < bufferSize; i++) {
             testVec.emplace_back();
@@ -258,8 +264,9 @@ int main() {
 
     {
         std::cout << "Testing ThreadLocalAllocator..." << std::endl;
-        std::vector<Test, ThreadLocalAllocator<Test>> testVec(
-                GetThreadLocalAllocator<Test, Antares::MemoryPool::Temporary>()
+        std::vector<Test, MemoryPool::ThreadLocalAllocator < Test>>
+        testVec(
+                pool.GetThreadLocalAllocator<Test, Antares::MemoryPool::Temporary>()
         );
         testVec.reserve(bufferSize);
         for (size_t i = 0; i < bufferSize; i++) {
@@ -277,14 +284,40 @@ int main() {
         std::cout << "Expecting buffer_counter = 0, got " << buffer_counter.load() << std::endl;
     }
 
-    Clean();
+    pool.Clean();
+
+    MemoryPool *pool2 = new MemoryPool();
+    MemoryPool *pool3 = new MemoryPool();
+
+    {
+        std::cout << "Testing multiple pools..." << std::endl;
+
+        pool2->NewArray<size_t>(bufferSize);
+        pool3->NewArray<size_t>(bufferSize);
+        pool2->NewTempArray<size_t>(bufferSize);
+        pool3->NewTempArray<size_t>(bufferSize);
+        delete pool2;
+        pool2 = new MemoryPool();
+        pool2->NewArray<size_t>(bufferSize);
+        pool2->NewTempArray<size_t>(bufferSize);
+        pool.NewArray<size_t>(bufferSize);
+        pool.NewTempArray<size_t>(bufferSize);
+        delete pool3;
+        pool3 = new MemoryPool();
+        pool3->NewArray<size_t>(bufferSize);
+        pool3->NewTempArray<size_t>(bufferSize);
+        delete pool2;
+        delete pool3;
+        pool.Clean();
+    }
+
     std::cout << "All memory cleaned" << std::endl;
 
-#ifdef __linux__
+    #ifdef __linux__
     std::this_thread::sleep_for(std::chrono::seconds(1));
     malloc_stats();
     std::cerr.flush();
-#endif
+    #endif
 
     return 0;
 }

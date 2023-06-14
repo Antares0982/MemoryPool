@@ -24,16 +24,18 @@
 // SOFTWARE.
 
 #include "MemoryPool.h"
-#include <unordered_map>
 #include <thread>
 #include <memory_resource>
 #include <atomic>
 #include <utility>
 #include <unordered_set>
 #include <cassert>
+#include <set>
 
-namespace Antares::MemoryPool {
+
+namespace Antares {
     namespace details {
+        /// @brief A simple spin lock
         class SpinLock {
             std::atomic_flag locked = ATOMIC_FLAG_INIT;
         public:
@@ -44,124 +46,246 @@ namespace Antares::MemoryPool {
             void unlock() {
                 locked.clear(std::memory_order_release);
             }
-        };
 
-        struct ResourceMap {
-            std::unordered_map<std::thread::id, std::unique_ptr<ControlledResouce>> holder;
-            SpinLock mutex;
-        };
-
-        static ResourceMap &GetResouce() {
-            static ResourceMap resource;
-            return resource;
-        }
-
-        static ResourceMap &GetBackupResouce() {
-            static ResourceMap resource;
-            return resource;
-        }
-
-        ControlledResouce *createResourceAndBindToResourceHolder(ResourceMap &resouce) {
-            ControlledResouce *rtPtrPtr;
-
-            {
-                // lock this scope
-                // exits fast so use spinlock
-                std::lock_guard lk(resouce.mutex);
-                auto &valPtrPtr = resouce.holder[std::this_thread::get_id()];
-                if (valPtrPtr == nullptr) {
-                    valPtrPtr = std::make_unique<ControlledResouce>();
-                }
-                rtPtrPtr = valPtrPtr.get();
+            bool try_lock() {
+                return !locked.test_and_set(std::memory_order_acquire);
             }
 
-            assert(rtPtrPtr); // never nullptr
-            auto &rtPtr = *rtPtrPtr;
-            if (rtPtr == nullptr) rtPtr = std::make_unique<Resource>();
+            void wait() {
+                while (locked.test(std::memory_order_acquire)) {}
+            }
+        };
 
-            return rtPtrPtr;
+        /// @brief A controlled resource, which is trivially destructible
+        struct CriticalControlledResourcePointer {
+            ControlledResouce *resource = nullptr;
+            SpinLock protectMtx; // this mutex protects per id per thread
+        };
+
+        /// @brief A pair of controlled resource pointer, which is trivially destructible
+        struct PairCriticalControlledResourcePointer {
+            CriticalControlledResourcePointer pointers[2];
+            std::mutex pairMutex;
+        };
+
+        /// @brief An array of controlled resource pointer, which is trivially destructible
+        typedef PairCriticalControlledResourcePointer ControlledResourceArray[MAX_MEMORYPOOL_COUNT];
+
+        struct ResourceMap {
+            using ThreadResourcesCollectionMap = std::unordered_set<ControlledResouce *>;
+
+            ThreadResourcesCollectionMap resourceMap[2];
+            SpinLock collectionMutex[2]; // this mutex protects resource per id
+            std::function<void()> gc;
+
+            void BindResource(ControlledResouce *resource, bool useFront) {
+                auto &useResourceMap = useFront ? resourceMap[0] : resourceMap[1];
+                auto &useMutex = useFront ? collectionMutex[0] : collectionMutex[1];
+                std::lock_guard lk(useMutex);
+                useResourceMap.insert(resource);
+            }
+
+            void CleanAll() {
+                for (auto &rMap: resourceMap) {
+                    for (auto resource: rMap) {
+                        resource->reset();
+                    }
+                }
+            }
+
+            void CleanTemp(bool useFront) {
+                auto &tempResourceMap = useFront ? resourceMap[1] : resourceMap[0];
+                for (auto resource: tempResourceMap) {
+                    resource->reset();
+                }
+            }
+
+            std::function<void()> &GetGCAlgorithm() {
+                return gc;
+            }
+        };
+
+        /// @brief A helper class to destroy resources when program exits. Mainly for bullshit MinGW
+        class ThreadLocalResourceDestructionHelper {
+            std::forward_list<ControlledResouce> resourceList;
+            SpinLock listMutex;
+
+        public:
+            std::pair<ControlledResouce *, ControlledResouce *> GetTwoNewResources() {
+                std::lock_guard lk(listMutex);
+                resourceList.emplace_front();
+                auto result1 = &resourceList.front();
+                resourceList.emplace_front();
+                auto result2 = &resourceList.front();
+                return {result1, result2};
+            }
+        };
+
+        struct ResourceIdCollection {
+            std::set<unsigned int> resourceCollection;
+            std::mutex mutex;
+        };
+
+        static ResourceIdCollection &GetResourceCollection() {
+            static ResourceIdCollection resourceCollection;
+            return resourceCollection;
         }
 
-        Resource *GetResourcePointer() {
-            thread_local const auto controlledResourcePtrPtr = createResourceAndBindToResourceHolder(GetResouce());
-            return controlledResourcePtrPtr->get();
+        static ThreadLocalResourceDestructionHelper &GetThreadLocalResourceDestructionHelper() {
+            static ThreadLocalResourceDestructionHelper helper;
+            return helper;
         }
 
-        Resource *GetTempResourcePointer() {
-            thread_local const auto controlledResourcePtrPtr = createResourceAndBindToResourceHolder(GetBackupResouce());
-            return controlledResourcePtrPtr->get();
+        unsigned int QueryFreeMemoryPoolId() {
+            auto &resourceIdCollection = GetResourceCollection();
+            auto &collection = resourceIdCollection.resourceCollection;
+            auto &mutex = resourceIdCollection.mutex;
+            {
+                std::lock_guard lk(mutex);
+                if (collection.empty()) {
+                    collection.insert(0);
+                    return 0;
+                }
+                if (collection.size() == 1) {
+                    auto result = (*collection.begin() == 0) ? 1 : 0;
+                    collection.insert(result);
+                    return result;
+                }
+                if (collection.size() == MAX_MEMORYPOOL_COUNT) {
+                    throw std::runtime_error("Too many memory pools created");
+                }
+                auto result = *collection.rbegin() + 1;
+                if (result == MAX_MEMORYPOOL_COUNT) {
+                    // under this case, we have to run over the whole collection to find a free id
+                    auto it = collection.begin();
+                    unsigned int lastKnown = *it;
+                    ++it;
+                    for (; it != collection.end(); ++it) {
+                        unsigned int current = *it;
+                        if (current - lastKnown > 1) {
+                            result = lastKnown + 1;
+                            collection.insert(result);
+                            return result;
+                        }
+                        lastKnown = current;
+                    }
+                } else {
+                    collection.insert(result);
+                    return result;
+                }
+            }
+            throw std::runtime_error("Too many memory pools created");
+        }
+
+        void FreeMemoryPoolId(unsigned int id) {
+            auto &resourceIdCollection = GetResourceCollection();
+            auto &collection = resourceIdCollection.resourceCollection;
+            auto &mutex = resourceIdCollection.mutex;
+            std::lock_guard lk(mutex);
+            collection.erase(id);
+        }
+
+        PairCriticalControlledResourcePointer *GetThreadLocalResourcePointerArray() {
+            thread_local ControlledResourceArray controlledResourceArray{};
+            return controlledResourceArray;
+        }
+
+        template<MemoryPool::AllocatePolicy P = MemoryPool::AllocatePolicy::Default>
+        Resource *GetResourcePointer(ResourceMap *bindingResourceMap, unsigned int id, bool useFront) {
+            auto resourcePointerArray = GetThreadLocalResourcePointerArray();
+            auto &resourcesPair = resourcePointerArray[id];
+            if constexpr (P == MemoryPool::AllocatePolicy::Temporary) {
+                useFront = !useFront;
+            }
+            auto &currentCriticalResource = useFront ? resourcesPair.pointers[0] : resourcesPair.pointers[1];
+            if (currentCriticalResource.resource ==
+                nullptr) [[unlikely]] { // these codes only run once per thread per id
+                std::lock_guard lk(resourcesPair.pairMutex);
+                if (currentCriticalResource.resource == nullptr) {
+                    auto &anotherCriticalResource = useFront ? resourcesPair.pointers[1]
+                                                             : resourcesPair.pointers[0];
+                    assert(anotherCriticalResource.resource == nullptr);
+                    auto [resource1, resource2] = GetThreadLocalResourceDestructionHelper().GetTwoNewResources();
+                    currentCriticalResource.resource = resource1;
+                    anotherCriticalResource.resource = resource2;
+                }
+                assert(currentCriticalResource.resource != nullptr);
+            }
+            auto rawResource = currentCriticalResource.resource->get();
+            if (rawResource == nullptr) [[unlikely]] {// these codes only run once per memory pool per thread
+                std::lock_guard lk(currentCriticalResource.protectMtx); // this exits fast, so use spin lock
+                if (nullptr == currentCriticalResource.resource->get()) {
+                    auto &controlledResource = *currentCriticalResource.resource;
+                    controlledResource = std::make_unique<Resource>();
+                    bindingResourceMap->BindResource(currentCriticalResource.resource, useFront);
+                }
+                rawResource = currentCriticalResource.resource->get();
+                assert(rawResource != nullptr);
+            }
+            return rawResource;
+        }
+
+        void *Malloc(MemoryPool *inPool, size_t size, size_t align) {
+            return inPool->Malloc(size, align);
+        }
+
+        void *MallocTemp(MemoryPool *inPool, size_t size, size_t align) {
+            return inPool->MallocTemp(size, align);
         }
     }
 
     using namespace details;
 
-    void *Malloc(size_t size, size_t align) {
-        return GetResourcePointer()->allocate(size, align);
+    MemoryPool::MemoryPool() :
+            pImpl(std::make_unique<ResourceMap>()),
+            id(QueryFreeMemoryPoolId()) {
     }
 
-    void *MallocTemp(size_t size, size_t align) {
-        return GetTempResourcePointer()->allocate(size, align);
+    MemoryPool::~MemoryPool() {
+        pImpl->CleanAll();
+        FreeMemoryPoolId(id);
     }
 
-    std::function<void()> &GetGCAlgorithm() {
-        static std::function<void()> gc;
-        return gc;
+    void *MemoryPool::Malloc(size_t size, size_t align) const {
+        return details::GetResourcePointer(pImpl.get(), id, useFront)->allocate(size, align);
     }
 
-    void SwapResource() {
-        std::unordered_set<std::thread::id> idSetAll;
-        for (auto &pair: GetResouce().holder) {
-            idSetAll.insert(pair.first);
-        }
-        for (auto &pair: GetBackupResouce().holder) {
-            idSetAll.insert(pair.first);
-        }
-        for (auto id: idSetAll) {
-            auto &resourcePtrPtr = GetResouce().holder[id];
-            if (!resourcePtrPtr) {
-                resourcePtrPtr = std::make_unique<ControlledResouce>();
-            }
-            if (!resourcePtrPtr->get()) { // NOLINT(readability-redundant-smartptr-get)
-                *resourcePtrPtr = std::make_unique<Resource>();
-            }
-            auto &backupResourcePtrPtr = GetBackupResouce().holder[id];
-            if (!backupResourcePtrPtr) {
-                backupResourcePtrPtr = std::make_unique<ControlledResouce>();
-            }
-            if (!backupResourcePtrPtr->get()) { // NOLINT(readability-redundant-smartptr-get)
-                *backupResourcePtrPtr = std::make_unique<Resource>();
-            }
-
-            std::swap(*resourcePtrPtr, *backupResourcePtrPtr);
-        }
+    void *MemoryPool::MallocTemp(size_t size, size_t align) const {
+        return details::GetResourcePointer<Temporary>(pImpl.get(), id, useFront)->allocate(size, align);
     }
 
-    void RegisterGC(std::function<void()> gc) {
-        GetGCAlgorithm() = std::move(gc);
+    void MemoryPool::RegisterGC(std::function<void()> gc) {
+        pImpl->GetGCAlgorithm() = std::move(gc);
     }
 
-    void GC() {
-        auto &gcAlgorithm = GetGCAlgorithm();
+    //
+    void MemoryPool::GC() {
+        auto &gcAlgorithm = pImpl->GetGCAlgorithm();
         if (!gcAlgorithm) {
-            Clean();
+            pImpl->CleanAll();
             return;
         }
         CleanTemp();
-        SwapResource();
+        useFront = !useFront;
         gcAlgorithm();
         CleanTemp();
     }
 
-    void CleanTemp() {
-        for (auto &pair: GetBackupResouce().holder) {
-            pair.second->get()->release();
-        }
+    //
+    void MemoryPool::CleanTemp() {
+        pImpl->CleanTemp(useFront);
     }
 
-    void Clean() {
-        CleanTemp();
-        for (auto &pair: GetResouce().holder) {
-            pair.second->get()->release();
-        }
+    //
+    void MemoryPool::Clean() {
+        pImpl->CleanAll();
+    }
+
+    details::Resource *MemoryPool::GetResourcePointer() {
+        return details::GetResourcePointer(pImpl.get(), id, useFront);
+    }
+
+    details::Resource *MemoryPool::GetTempResourcePointer() {
+        return details::GetResourcePointer<Temporary>(pImpl.get(), id, useFront);
     }
 } // Antares
