@@ -69,21 +69,21 @@ namespace Antares {
             ~Allocator() = default;
 
             [[nodiscard]] T *allocate(size_t n
-                    #if __cplusplus <= 201703L
+#if __cplusplus <= 201703L
                     , const void *hint = nullptr
-                    #endif
+#endif
             ) {
                 auto result = (T *) Trait::Malloc(pool, n * sizeof(T));
                 if (!result) throw std::bad_array_new_length();
                 return result;
             }
 
-            #if __cplusplus >= 202106L
+#if __cplusplus >= 202106L
             std::allocation_result<T*, std::size_t> allocate_at_least(std::size_t n) {
                 auto result = allocate(n);
                 return {result, n};
             }
-            #endif
+#endif
 
             constexpr void deallocate(T *, std::size_t) {}
         };
@@ -149,6 +149,9 @@ namespace Antares {
 
         ~MemoryPool();
 
+        /// @brief get the id of the pool.
+        [[nodiscard]] auto GetId() const { return id; }
+
         /// @brief get raw pointer to the resource.
         details::Resource *GetResourcePointer();
 
@@ -165,7 +168,7 @@ namespace Antares {
         constexpr static void Free(void *) {}
 
         template<AllocatePolicy P = Default>
-        void *MallocWithPolicy(size_t size, size_t align = sizeof(void *)) {
+        void *MallocByPolicy(size_t size, size_t align = sizeof(void *)) {
             if constexpr (P == Default)
                 return Malloc(size, align);
             else if constexpr (P == Temporary)
@@ -230,12 +233,14 @@ namespace Antares {
         }
 
         /// @brief Construct an object at given address
+        /// @note static interfaces
         template<typename T, typename ... Args>
         static void AllocateAt(T *ptr, Args &&... args) {
             new(ptr) T(std::forward<Args>(args)...);
         }
 
         /// @brief Delete an object
+        /// @note static interfaces
         template<typename T>
         static void Delete(T *ptr) {
             ptr->~T();

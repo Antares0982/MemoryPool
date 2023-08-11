@@ -31,6 +31,7 @@
 #include <unordered_set>
 #include <cassert>
 #include <set>
+#include <forward_list>
 
 
 namespace Antares {
