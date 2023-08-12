@@ -36,8 +36,9 @@ namespace Antares {
     class MemoryPool;
     namespace details {
         using Resource = std::pmr::monotonic_buffer_resource;
-        using ControlledResouce = std::unique_ptr<Resource>;
+        using ControlledResource = std::unique_ptr<Resource>;
 
+        /// ---------- Memory Allocation Utilities ----------
         template<typename T, typename = std::enable_if_t<!std::is_void_v<T>>>
         constexpr void ConstructArray(T *where, size_t size) {
             for (size_t i = 0; i < size; ++i) {
@@ -87,6 +88,7 @@ namespace Antares {
 
             constexpr void deallocate(T *, std::size_t) {}
         };
+        /// ---------- Memory Allocation Utilities End ----------
     }
 
     namespace details {

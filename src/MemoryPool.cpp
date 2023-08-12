@@ -59,7 +59,7 @@ namespace Antares {
 
         /// @brief A controlled resource, which is trivially destructible
         struct CriticalControlledResourcePointer {
-            ControlledResouce *resource = nullptr;
+            ControlledResource *resource = nullptr;
             SpinLock protectMtx; // this mutex protects per id per thread
         };
 
@@ -73,21 +73,21 @@ namespace Antares {
         typedef PairCriticalControlledResourcePointer ControlledResourceArray[MAX_MEMORYPOOL_COUNT];
 
         struct ResourceMap {
-            using ThreadResourcesCollectionMap = std::unordered_set<ControlledResouce *>;
+            using ThreadResourcesCollectionMap = std::unordered_set<ControlledResource *>;
 
-            ThreadResourcesCollectionMap resourceMap[2];
-            SpinLock collectionMutex[2]; // this mutex protects resource per id
+            ThreadResourcesCollectionMap resourceMaps[2];
+            SpinLock collectionMutexes[2]; // this mutex protects resource per id
             std::function<void()> gc;
 
-            void BindResource(ControlledResouce *resource, bool useFront) {
-                auto &useResourceMap = useFront ? resourceMap[0] : resourceMap[1];
-                auto &useMutex = useFront ? collectionMutex[0] : collectionMutex[1];
+            void BindResource(ControlledResource *resource, bool useFront) {
+                auto &useResourceMap = useFront ? resourceMaps[0] : resourceMaps[1];
+                auto &useMutex = useFront ? collectionMutexes[0] : collectionMutexes[1];
                 std::lock_guard lk(useMutex);
                 useResourceMap.insert(resource);
             }
 
             void CleanAll() {
-                for (auto &rMap: resourceMap) {
+                for (auto &rMap: resourceMaps) {
                     for (auto resource: rMap) {
                         resource->reset();
                     }
@@ -95,7 +95,7 @@ namespace Antares {
             }
 
             void CleanTemp(bool useFront) {
-                auto &tempResourceMap = useFront ? resourceMap[1] : resourceMap[0];
+                auto &tempResourceMap = useFront ? resourceMaps[1] : resourceMaps[0];
                 for (auto resource: tempResourceMap) {
                     resource->reset();
                 }
@@ -108,11 +108,11 @@ namespace Antares {
 
         /// @brief A helper class to destroy resources when program exits. Mainly for bullshit MinGW
         class ThreadLocalResourceDestructionHelper {
-            std::forward_list<ControlledResouce> resourceList;
+            std::forward_list<ControlledResource> resourceList;
             SpinLock listMutex;
 
         public:
-            std::pair<ControlledResouce *, ControlledResouce *> GetTwoNewResources() {
+            std::pair<ControlledResource *, ControlledResource *> GetTwoNewResources() {
                 std::lock_guard lk(listMutex);
                 resourceList.emplace_front();
                 auto result1 = &resourceList.front();
@@ -199,8 +199,7 @@ namespace Antares {
                 useFront = !useFront;
             }
             auto &currentCriticalResource = useFront ? resourcesPair.pointers[0] : resourcesPair.pointers[1];
-            if (currentCriticalResource.resource ==
-                nullptr) [[unlikely]] { // these codes only run once per thread per id
+            if (currentCriticalResource.resource == nullptr) [[unlikely]] { // only run once per thread per id
                 std::lock_guard lk(resourcesPair.pairMutex);
                 if (currentCriticalResource.resource == nullptr) {
                     auto &anotherCriticalResource = useFront ? resourcesPair.pointers[1]
