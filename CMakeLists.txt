@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.14)
 
-set(CMAKE_CXX_STANDARD 20)
+set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_EXTENSIONS OFF)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
@@ -17,6 +17,8 @@ if (NOT WIN32)
 endif ()
 
 target_compile_definitions(common INTERFACE TEST_MEMORYPOOL_MAIN MAX_MEMORYPOOL_COUNT=64)
+
+add_subdirectory(./cmake_script)
 
 ############################################################################
 set(BUILD_TARGET memorypool_test)

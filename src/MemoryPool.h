@@ -86,6 +86,13 @@ namespace Antares {
             }
 #endif
 
+#if __cplusplus <= 201703L
+            template<typename U>
+            struct rebind {
+                typedef Allocator<U, Trait> other;
+            };
+#endif
+
             constexpr void deallocate(T *, std::size_t) {}
         };
         /// ---------- Memory Allocation Utilities End ----------
