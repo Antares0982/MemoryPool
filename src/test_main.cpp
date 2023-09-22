@@ -41,6 +41,15 @@
 
 #endif
 
+#if defined(_MSC_VER)
+
+#include "windows.h"
+#define _CRTDBG_MAP_ALLOC //to get more details
+#include <stdlib.h>  
+#include <crtdbg.h>   //for malloc and free
+
+#endif
+
 struct TreeNode {
 	int val;
 	TreeNode* sons[4];
@@ -89,12 +98,42 @@ struct BaseAsyncData {
 };
 
 int main() {
+#ifdef _MSC_VER
+	_CrtMemState sOld;
+	_CrtMemState sNew;
+	_CrtMemState sDiff;
+	_CrtMemCheckpoint(&sOld); //take a snapshot
+#endif
+
 	using MemoryPool = Antares::MemoryPool;
 	MemoryPool pool;
+	//
 	std::array<std::thread, 4> threads;
-	std::array<std::mutex, 4> mutexes;
+	std::array<std::deque<std::function<void()>>, 4> tasks_arr;
+	std::array<std::mutex, 4> task_mutexes;
+	bool exit = false;
+	for (size_t i = 0; i < 4; ++i) {
+		auto& tasks = tasks_arr[i];
+		threads[i] = std::thread([i, &pool, &task_mutexes, &tasks, &exit] {
+			while (!exit) {
+				std::function<void()> task;
+				{
+					std::lock_guard lk(task_mutexes[i]);
+					if (tasks.empty()) {
+						continue;
+					}
+					task = tasks.front();
+					tasks.pop_front();
+				}
+				task();
+				std::this_thread::sleep_for(std::chrono::milliseconds(100));
+			}
+		});
+	}
 
+	//
 	std::array<std::deque<TreeNode*>, 4> dequeues;
+	std::array<std::mutex, 4> mutexes;
 
 	constexpr size_t total = 1000000;
 
@@ -115,7 +154,8 @@ int main() {
 	SpinLock lk0;
 	lk0.lock();
 	for (size_t i = 0; i < 4; i++) {
-		threads[i] = std::thread([i, &pool, &lk0, &mutexes, &dequeues, &counter, total, &async_data, &fu] {
+		std::lock_guard lk(task_mutexes[i]);
+		tasks_arr[i].emplace_back([i, &pool, &lk0, &mutexes, &dequeues, &counter, total, &async_data, &fu] {
 			lk0.lock();
 			lk0.unlock();
 			// get one node from queue, then create 4 nodes and send them to queue
@@ -137,8 +177,7 @@ int main() {
 					auto counting = counter++;
 					if (counting > total) {
 						async_data.finish_one();
-						while (async_data.counter != 0)
-						{
+						while (async_data.counter != 0) {
 							fu.wait_for(std::chrono::milliseconds(100));
 						}
 						return;
@@ -152,15 +191,14 @@ int main() {
 				}
 			}
 			async_data.finish_one();
-			while (async_data.counter != 0)
-			{
+			while (async_data.counter != 0) {
 				fu.wait_for(std::chrono::milliseconds(100));
 			}
-			});
+		});
 	}
 	lk0.unlock();
-	for (auto& thread : threads) {
-		thread.join();
+	while (async_data.counter != 0) {
+		fu.wait_for(std::chrono::milliseconds(100));
 	}
 
 	for (int i = 0; i < 4; ++i) {
@@ -172,7 +210,7 @@ int main() {
 
 
 	/// second task: gc the old tree, and create a new tree with the same structure
-	std::function < void() > gc = [&pool, &mutexes, &dequeues, &root, &counter, total]() {
+	std::function<void()> gc = [&pool, &mutexes, &dequeues, &root, &counter, &tasks_arr, &task_mutexes, total]() {
 		// copy root
 		auto newroot = pool.New<TreeNode>(root->val);
 		for (size_t i = 0; i < 4; i++) {
@@ -183,7 +221,7 @@ int main() {
 		root = newroot;
 		// start recursive gc
 		dequeues[0].push_back(newroot);
-		std::array<std::thread, 4> threads;
+		//        std::array<std::thread, 4> threads;
 		BaseAsyncData async_data;
 		async_data.counter = 4;
 		auto fu = async_data.pr.get_future();
@@ -191,7 +229,8 @@ int main() {
 		SpinLock lk1;
 		lk1.lock();
 		for (size_t i = 0; i < 4; i++) {
-			threads[i] = std::thread([i, &pool, &lk1, &mutexes, &dequeues, &counter, &async_data, &fu] {
+			std::lock_guard lk(task_mutexes[i]);
+			tasks_arr[i].emplace_back([i, &pool, &lk1, &mutexes, &dequeues, &counter, &async_data, &fu] {
 				lk1.lock();
 				lk1.unlock();
 				auto& mutex = mutexes[i];
@@ -224,17 +263,16 @@ int main() {
 					}
 				}
 				async_data.finish_one();
-				while (async_data.counter != 0)
-				{
+				while (async_data.counter != 0) {
 					fu.wait_for(std::chrono::milliseconds(100));
 				}
-				});
+			});
 		}
 		lk1.unlock();
-		for (auto& thread : threads) {
-			thread.join();
+		while (async_data.counter != 0) {
+			fu.wait_for(std::chrono::milliseconds(100));
 		}
-		};
+	};
 
 #ifdef __linux__
 	std::this_thread::sleep_for(std::chrono::seconds(1));
@@ -260,6 +298,13 @@ int main() {
 	std::cout << "Current value in new root: " << root->val << std::endl;
 	std::cout << "Current value in old root (invalid read): " << oldRoot->val << ", since GCed it may not be 0"
 		<< std::endl << std::endl;
+
+	exit = true;
+	for (auto& thread : threads) {
+		thread.join();
+	}
+
+	/// -------------------------------------------------
 
 	constexpr size_t bufferSize = 1024;
 	static size_t buffer[bufferSize];
@@ -366,7 +411,20 @@ int main() {
 	std::cerr.flush();
 #endif
 
+#ifdef _MSC_VER
+	_CrtMemCheckpoint(&sNew); //take a snapshot 
+	if (_CrtMemDifference(&sDiff, &sOld, &sNew)) // if there is a difference
+	{
+		OutputDebugString("-----------_CrtMemDumpStatistics ---------");
+		_CrtMemDumpStatistics(&sDiff);
+		OutputDebugString("-----------_CrtMemDumpAllObjectsSince ---------");
+		_CrtMemDumpAllObjectsSince(&sOld);
+		OutputDebugString("-----------_CrtDumpMemoryLeaks ---------");
+		_CrtDumpMemoryLeaks();
+	}
+#endif
+
 	return 0;
-		}
+}
 
 #endif
