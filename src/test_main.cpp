@@ -47,6 +47,7 @@
 #define _CRTDBG_MAP_ALLOC //to get more details
 #include <stdlib.h>  
 #include <crtdbg.h>   //for malloc and free
+#include <map>
 
 #endif
 
@@ -96,6 +97,17 @@ struct BaseAsyncData {
 		pr.get_future().wait();
 	}
 };
+
+#ifdef _MSC_VER
+namespace Antares::details{
+    struct ResourceIdCollection {
+        std::map<unsigned int, ResourceMap *> resourceCollection;
+        std::mutex mutex;
+    };
+
+    ResourceIdCollection &GetResourceCollection();
+}
+#endif
 
 int main() {
 #ifdef _MSC_VER
@@ -412,6 +424,8 @@ int main() {
 #endif
 
 #ifdef _MSC_VER
+    auto ptr = &Antares::details::GetResourceCollection();
+    Antares::MemoryPool::Delete(ptr);
 	_CrtMemCheckpoint(&sNew); //take a snapshot 
 	if (_CrtMemDifference(&sDiff, &sOld, &sNew)) // if there is a difference
 	{
@@ -422,6 +436,7 @@ int main() {
 		OutputDebugString("-----------_CrtDumpMemoryLeaks ---------");
 		_CrtDumpMemoryLeaks();
 	}
+    new(ptr) Antares::details::ResourceIdCollection;
 #endif
 
 	return 0;

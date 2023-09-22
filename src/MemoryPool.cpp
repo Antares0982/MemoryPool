@@ -152,7 +152,7 @@ namespace Antares {
             std::mutex mutex;
         };
 
-        static ResourceIdCollection &GetResourceCollection() {
+        ResourceIdCollection &GetResourceCollection() {
             static ResourceIdCollection resourceCollection;
             return resourceCollection;
         }
