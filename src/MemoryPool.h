@@ -33,6 +33,13 @@
 
 
 namespace Antares {
+#ifdef  _DEBUG
+    namespace debug {
+        inline std::atomic<size_t> totalBufferObj = 0;
+        inline std::atomic<size_t> totalBytes = 0;
+    }
+#endif
+
     class MemoryPool;
     namespace details {
         using Resource = std::pmr::monotonic_buffer_resource;
@@ -99,8 +106,6 @@ namespace Antares {
     }
 
     namespace details {
-        struct ResourceMap;
-
         [[nodiscard]] void *Malloc(MemoryPool *inPool, size_t size, size_t align = sizeof(void *));
 
         [[nodiscard]] void *MallocTemp(MemoryPool *inPool, size_t size, size_t align = sizeof(void *));
@@ -124,9 +129,9 @@ namespace Antares {
     }
 
     class MemoryPool {
-        std::unique_ptr<details::ResourceMap> pImpl;
         unsigned int id;
         bool useFront = true;
+        std::function<void()> gc_func;
 
     public:
         enum AllocatePolicy {

@@ -41,18 +41,6 @@
 
 #endif
 
-#if defined(_MSC_VER)
-
-#include "windows.h"
-
-#define _CRTDBG_MAP_ALLOC //to get more details
-
-#include <stdlib.h>
-#include <crtdbg.h>   //for malloc and free
-#include <map>
-
-#endif
-
 struct TreeNode {
     int val;
     TreeNode *sons[4];
@@ -100,25 +88,7 @@ struct BaseAsyncData {
     }
 };
 
-#ifdef _MSC_VER
-namespace Antares::details {
-    struct ResourceIdCollection {
-        std::map<unsigned int, ResourceMap *> resourceCollection;
-        std::mutex mutex;
-    };
-
-    ResourceIdCollection &GetResourceCollection();
-}
-#endif
-
 int main() {
-#ifdef _MSC_VER
-    _CrtMemState sOld;
-    _CrtMemState sNew;
-    _CrtMemState sDiff;
-    _CrtMemCheckpoint(&sOld); //take a snapshot
-#endif
-
     using MemoryPool = Antares::MemoryPool;
     MemoryPool pool;
     //
@@ -169,7 +139,7 @@ int main() {
     lk0.lock();
     for (size_t i = 0; i < 4; i++) {
         std::lock_guard lk(task_mutexes[i]);
-        tasks_arr[i].emplace_back([i, &pool, &lk0, &mutexes, &dequeues, &counter, total, &async_data, &fu] {
+        tasks_arr[i].emplace_back([i, &pool, &lk0, &mutexes, &dequeues, &counter, total, &async_data] {
             lk0.lock();
             lk0.unlock();
             // get one node from queue, then create 4 nodes and send them to queue
@@ -191,9 +161,6 @@ int main() {
                     auto counting = counter++;
                     if (counting > total) {
                         async_data.finish_one();
-                        while (async_data.counter != 0) {
-                            fu.wait_for(std::chrono::milliseconds(100));
-                        }
                         return;
                     }
                     auto ptr = pool.New<TreeNode>(counting);
@@ -205,9 +172,6 @@ int main() {
                 }
             }
             async_data.finish_one();
-            while (async_data.counter != 0) {
-                fu.wait_for(std::chrono::milliseconds(100));
-            }
         });
     }
     lk0.unlock();
@@ -222,7 +186,6 @@ int main() {
     std::cout << "done" << std::endl;
     std::cout << "current root node address: " << root << std::endl << std::endl;
 
-
     /// second task: gc the old tree, and create a new tree with the same structure
     std::function < void() > gc = [&pool, &mutexes, &dequeues, &root, &counter, &tasks_arr, &task_mutexes, total]() {
         // copy root
@@ -235,16 +198,15 @@ int main() {
         root = newroot;
         // start recursive gc
         dequeues[0].push_back(newroot);
-        //        std::array<std::thread, 4> threads;
-        BaseAsyncData async_data;
-        async_data.counter = 4;
-        auto fu = async_data.pr.get_future();
+        BaseAsyncData async_data2;
+        async_data2.counter = 4;
+        auto fu = async_data2.pr.get_future();
         counter = total;
         SpinLock lk1;
         lk1.lock();
         for (size_t i = 0; i < 4; i++) {
             std::lock_guard lk(task_mutexes[i]);
-            tasks_arr[i].emplace_back([i, &pool, &lk1, &mutexes, &dequeues, &counter, &async_data, &fu] {
+            tasks_arr[i].emplace_back([i, &pool, &lk1, &mutexes, &dequeues, &counter, &async_data2] {
                 lk1.lock();
                 lk1.unlock();
                 auto &mutex = mutexes[i];
@@ -276,14 +238,11 @@ int main() {
                         }
                     }
                 }
-                async_data.finish_one();
-                while (async_data.counter != 0) {
-                    fu.wait_for(std::chrono::milliseconds(100));
-                }
+                async_data2.finish_one();
             });
         }
         lk1.unlock();
-        while (async_data.counter != 0) {
+        while (async_data2.counter != 0) {
             fu.wait_for(std::chrono::milliseconds(100));
         }
     };
@@ -425,22 +384,10 @@ int main() {
     std::cerr.flush();
 #endif
 
-#ifdef _MSC_VER
-    auto ptr = &Antares::details::GetResourceCollection();
-    Antares::MemoryPool::Delete(ptr);
-    _CrtMemCheckpoint(&sNew); //take a snapshot
-    if (_CrtMemDifference(&sDiff, &sOld, &sNew)) // if there is a difference
-    {
-        OutputDebugString("-----------_CrtMemDumpStatistics ---------");
-        _CrtMemDumpStatistics(&sDiff);
-        OutputDebugString("-----------_CrtMemDumpAllObjectsSince ---------");
-        _CrtMemDumpAllObjectsSince(&sOld);
-        OutputDebugString("-----------_CrtDumpMemoryLeaks ---------");
-        _CrtDumpMemoryLeaks();
-    }
-    new(ptr) Antares::details::ResourceIdCollection;
+#ifdef  _DEBUG
+    std::cout << "Resource obj count: " << Antares::debug::totalBufferObj.load() << std::endl;
+    std::cout << "bytes requested: " << Antares::debug::totalBytes.load() << std::endl;
 #endif
-
     return 0;
 }
 
