@@ -11,8 +11,10 @@ add_library(common INTERFACE)
 file(GLOB testpath ./src/*.cpp)
 
 if (NOT WIN32)
+#    target_compile_options(common INTERFACE -fsanitize=address)
     target_compile_options(common INTERFACE -Wall -Werror=return-type)
     target_compile_options(common INTERFACE -pthread)
+#    target_link_options(common INTERFACE -fsanitize=address)
     target_link_libraries(common INTERFACE pthread)
 endif ()
 
@@ -23,6 +25,5 @@ add_subdirectory(./cmake_script)
 ############################################################################
 set(BUILD_TARGET memorypool_test)
 add_executable(${BUILD_TARGET} ${testpath})
-
-set_target_properties(${BUILD_TARGET} PROPERTIES OUTPUT_NAME ${BUILD_TARGET})
 target_link_libraries(${BUILD_TARGET} PRIVATE common)
+set_target_properties(${BUILD_TARGET} PROPERTIES OUTPUT_NAME ${BUILD_TARGET})

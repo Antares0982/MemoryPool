@@ -35,12 +35,6 @@
 #include <atomic>
 #include <future>
 
-#ifdef __linux__
-
-#include <malloc.h>
-
-#endif
-
 struct TreeNode {
     int val;
     TreeNode *sons[4];
@@ -100,7 +94,7 @@ int main() {
         auto &tasks = tasks_arr[i];
         threads[i] = std::thread([i, &pool, &task_mutexes, &tasks, &exit] {
             while (!exit) {
-                std::function < void() > task;
+                std::function<void()> task;
                 {
                     std::lock_guard lk(task_mutexes[i]);
                     if (tasks.empty()) {
@@ -187,7 +181,7 @@ int main() {
     std::cout << "current root node address: " << root << std::endl << std::endl;
 
     /// second task: gc the old tree, and create a new tree with the same structure
-    std::function < void() > gc = [&pool, &mutexes, &dequeues, &root, &counter, &tasks_arr, &task_mutexes, total]() {
+    std::function<void()> gc = [&pool, &mutexes, &dequeues, &root, &counter, &tasks_arr, &task_mutexes, total]() {
         // copy root
         auto newroot = pool.New<TreeNode>(root->val);
         for (size_t i = 0; i < 4; i++) {
@@ -247,22 +241,10 @@ int main() {
         }
     };
 
-#ifdef __linux__
-    std::this_thread::sleep_for(std::chrono::seconds(1));
-    malloc_stats();
-    std::this_thread::sleep_for(std::chrono::seconds(1));
-#endif
-
     auto oldRoot = root;
     std::cout << "Before GC, current value in old root: " << oldRoot->val << std::endl << std::endl;
     pool.RegisterGC(gc);
     pool.GC();
-
-#ifdef __linux__
-    std::this_thread::sleep_for(std::chrono::seconds(1));
-    malloc_stats();
-    std::this_thread::sleep_for(std::chrono::seconds(1));
-#endif
 
     std::cout << std::endl << "GC done" << std::endl;
     std::cout << "current root node address: " << root << std::endl;
@@ -377,12 +359,6 @@ int main() {
     }
 
     std::cout << "All memory cleaned" << std::endl;
-
-#ifdef __linux__
-    std::this_thread::sleep_for(std::chrono::seconds(1));
-    malloc_stats();
-    std::cerr.flush();
-#endif
 
 #ifdef  _DEBUG
     std::cout << "Resource obj count: " << Antares::debug::totalBufferObj.load() << std::endl;

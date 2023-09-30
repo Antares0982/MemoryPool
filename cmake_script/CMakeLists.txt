@@ -9,7 +9,7 @@ if (NOT MSVC)
             RUN_OUTPUT_VARIABLE SET_RUN_OUTPUT
     )
 
-    if (NOT (test_compile_set AND ("${test_run_set}" EQUAL 0)))
+    if (NOT (test_compile_tls_check AND ("${test_run_tls_check}" EQUAL 0)))
         message(WARNING "detected broken thread_local")
 
         target_compile_definitions(common INTERFACE WORKAROUND_BROKEN_MINGW_TLS)

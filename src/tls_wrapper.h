@@ -65,6 +65,7 @@ namespace Antares {
             auto key = (void *) this;
             auto &manager = ThreadLocalManager<T>::get();
             manager.erase(key);
+            delete object;
         }
 
         T *operator->() {
